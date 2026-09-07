@@ -13,12 +13,12 @@
   - 检索 = 内存里算余弦，取 top_k
   - numpy 有就用（快），没有就用纯 Python（慢一点，但几千条无所谓）
 
-★ 环境变量：
+★ 配置（App 设置页 > 环境变量 > 默认值）：
     USE_RAG         —— 设成 1 才启用
-    EMBED_API_KEY   —— OpenAI 兼容的 embedding key
-    EMBED_BASE_URL  —— 默认 https://open.bigmodel.cn/api/paas/v4（智谱）
+    EMBED_API_KEY   —— OpenAI 兼容的 embedding key；不填则复用中转 DEEPSEEK_KEY
+    EMBED_BASE_URL  —— embedding 地址；不填则复用中转 DEEPSEEK_BASE_URL
     EMBED_MODEL     —— 默认 embedding-3
-    EMBED_DIM       —— 默认 2048（换模型时按模型维度改）
+    EMBED_DIM       —— 默认 1024（换模型时按模型维度改）
 
 ★ 降级策略：任何一步失败都返回 None，调用方自动退回"最新 N 条"全量注入，功能不受影响。
 """
@@ -29,18 +29,61 @@ import threading
 import requests
 from db import get_conn
 
-# ── 开关 ──
-USE_RAG = os.environ.get('USE_RAG', '0') == '1'
+DEFAULT_EMBED_BASE = 'https://open.bigmodel.cn/api/paas/v4'
 
-EMBED_API_KEY  = os.environ.get('EMBED_API_KEY', '')
-EMBED_BASE_URL = os.environ.get('EMBED_BASE_URL', 'https://open.bigmodel.cn/api/paas/v4')
-EMBED_MODEL    = os.environ.get('EMBED_MODEL', 'embedding-3')
-# ★ 维度直接决定内存和速度，是最重要的旋钮：
-#     20000 条 × 2048 维 = 156MB，检索 12ms
-#     20000 条 × 1024 维 =  78MB，检索  6ms   ← 默认，这个档位性价比最高
-#     20000 条 ×  512 维 =  39MB，检索  3ms
-#   智谱 embedding-3 支持 dimensions 参数，1024 维对中文记忆检索完全够用。
-EMBED_DIM      = int(os.environ.get('EMBED_DIM', '1024'))
+
+def _cfg(key: str, fallback: str = '') -> str:
+    """运行时读配置：DB settings > 环境变量 > fallback。"""
+    try:
+        import config
+        v = (config.get_setting(key) or '').strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return (os.environ.get(key) or fallback or '').strip()
+
+
+def _use_rag() -> bool:
+    return _cfg('USE_RAG', os.environ.get('USE_RAG', '0')).lower() in ('1', 'true', 'yes', 'on')
+
+
+def _embed_key() -> str:
+    key = _cfg('EMBED_API_KEY', os.environ.get('EMBED_API_KEY', ''))
+    if key:
+        return key
+    # 中转用户通常同一把 key 也能打 /embeddings
+    return _cfg('DEEPSEEK_KEY', os.environ.get('DEEPSEEK_KEY', ''))
+
+
+def _embed_base() -> str:
+    url = _cfg('EMBED_BASE_URL', os.environ.get('EMBED_BASE_URL', ''))
+    if url:
+        return url.rstrip('/')
+    ds = _cfg('DEEPSEEK_BASE_URL', os.environ.get('DEEPSEEK_BASE_URL', ''))
+    if ds:
+        return ds.rstrip('/')
+    return DEFAULT_EMBED_BASE
+
+
+def _embed_model() -> str:
+    return _cfg('EMBED_MODEL', os.environ.get('EMBED_MODEL', 'embedding-3')) or 'embedding-3'
+
+
+def _embed_dim() -> int:
+    raw = _cfg('EMBED_DIM', os.environ.get('EMBED_DIM', '1024')) or '1024'
+    try:
+        return int(raw)
+    except ValueError:
+        return 1024
+
+
+# 兼容旧代码读模块常量（route_tts 等）——注意这些是启动时快照，状态接口请用函数
+USE_RAG = os.environ.get('USE_RAG', '0') == '1'
+EMBED_API_KEY = os.environ.get('EMBED_API_KEY', '')
+EMBED_BASE_URL = os.environ.get('EMBED_BASE_URL', DEFAULT_EMBED_BASE)
+EMBED_MODEL = os.environ.get('EMBED_MODEL', 'embedding-3')
+EMBED_DIM = int(os.environ.get('EMBED_DIM', '1024'))
 
 # 内存里最多缓存多少条向量（每条 EMBED_DIM×4 字节）
 # 1024 维时 20000 条 ≈ 78MB。聊几年也够，想更省就调小。
@@ -65,13 +108,15 @@ _CACHE_LOCK = threading.Lock()
 
 
 def init_vector_support():
-    """启动时调用一次。只需要一个 TEXT 列，不依赖任何扩展。"""
+    """启动时或设置页改完后调用。只需要一个 TEXT 列，不依赖任何扩展。"""
     global _VECTOR_READY
-    if not USE_RAG:
+    if not _use_rag():
         print('[rag] 未启用（USE_RAG != 1），使用全量注入 + prompt 缓存')
+        _VECTOR_READY = False
         return False
-    if not EMBED_API_KEY:
-        print('[rag] ⚠️ 没配 EMBED_API_KEY，退回全量注入')
+    if not _embed_key():
+        print('[rag] ⚠️ 没配 EMBED_API_KEY（也没有可复用的中转 Key），退回全量注入')
+        _VECTOR_READY = False
         return False
     try:
         conn = get_conn()
@@ -84,30 +129,40 @@ def init_vector_support():
         conn.close()
         _VECTOR_READY = True
         engine = 'numpy' if _HAS_NUMPY else '纯Python'
-        print(f'[rag] ✅ 内存向量检索就绪，模型={EMBED_MODEL} 维度={EMBED_DIM} 引擎={engine}')
+        print(f'[rag] ✅ 内存向量检索就绪，模型={_embed_model()} 维度={_embed_dim()} '
+              f'url={_embed_base()} 引擎={engine}')
+        start_auto_backfill()
         return True
     except Exception as e:
         print(f'[rag] ⚠️ 初始化失败（{e}）→ 退回全量注入，功能不受影响')
+        _VECTOR_READY = False
         return False
 
 
 def is_vector_ready():
+    """设置页改完也能立刻生效：没初始化过就懒加载一次。"""
+    if not _use_rag() or not _embed_key():
+        return False
+    if not _VECTOR_READY:
+        init_vector_support()
     return _VECTOR_READY
 
 
 def embed(text: str):
     """算一条 embedding。失败返回 None。"""
-    if not (_VECTOR_READY and EMBED_API_KEY and text):
+    if not (is_vector_ready() and _embed_key() and text):
         return None
+    url = f'{_embed_base()}/embeddings'
+    headers = {'Authorization': f'Bearer {_embed_key()}',
+               'Content-Type': 'application/json'}
+    payload = {'model': _embed_model(), 'input': text[:2000],
+               'dimensions': _embed_dim()}
     try:
-        r = requests.post(
-            f'{EMBED_BASE_URL.rstrip("/")}/embeddings',
-            headers={'Authorization': f'Bearer {EMBED_API_KEY}',
-                     'Content-Type': 'application/json'},
-            json={'model': EMBED_MODEL, 'input': text[:2000],
-                  'dimensions': EMBED_DIM},   # 智谱 embedding-3 / OpenAI v3 都支持降维
-            timeout=15,
-        )
+        r = requests.post(url, headers=headers, json=payload, timeout=15)
+        # 部分中转不支持 dimensions，去掉再试一次
+        if r.status_code == 400 and 'dimension' in (r.text or '').lower():
+            payload.pop('dimensions', None)
+            r = requests.post(url, headers=headers, json=payload, timeout=15)
         if r.status_code != 200:
             print(f'[rag] embedding 失败 {r.status_code}: {r.text[:150]}')
             return None
@@ -175,7 +230,7 @@ def _load_cache(table):
             _CACHE[table] = store
             _MATRIX[table] = None
             _CACHE_LOADED[table] = True
-            mb = len(store) * EMBED_DIM * 4 / 1024 / 1024   # float32 = 4 字节
+            mb = len(store) * _embed_dim() * 4 / 1024 / 1024   # float32 = 4 字节
             capped = ' (已达上限)' if len(rows) >= CACHE_MAX else ''
             print(f'[rag] 缓存 {table}: {len(store)} 条向量，约 {mb:.1f}MB{capped}，'
                   f'耗时 {(time.time()-t0)*1000:.0f}ms')
@@ -230,7 +285,7 @@ def invalidate_cache(table=None):
 
 def save_embedding(table: str, row_id: int, content: str):
     """写记忆后调用（后台线程里跑，失败无所谓）。"""
-    if not _VECTOR_READY:
+    if not is_vector_ready():
         return
     vec = embed(content)
     if not vec:
@@ -281,7 +336,7 @@ def _top_k_ids(table, query_vec, candidate_ids, top_k):
 
 def search_long_memory(user_id, character_id, shared_id, query_text, top_k=8):
     """语义检索用户事实。返回 [(content, timestamp, category)] 或 None（退回全量）。"""
-    if not _VECTOR_READY:
+    if not is_vector_ready():
         return None
     qv = _to_vec(embed(query_text))
     if qv is None:
@@ -316,7 +371,7 @@ def search_long_memory(user_id, character_id, shared_id, query_text, top_k=8):
 
 def search_bond_memory(user_id, character_id, kind, query_text, top_k=6):
     """语义检索羁绊记忆。返回 [(id, content, timestamp)] 或 None。"""
-    if not _VECTOR_READY:
+    if not is_vector_ready():
         return None
     qv = _to_vec(embed(query_text))
     if qv is None:
@@ -347,8 +402,8 @@ def search_bond_memory(user_id, character_id, kind, query_text, top_k=6):
 
 def backfill_embeddings(limit=500):
     """把已有记忆补上 embedding。启用 RAG 后调 /rag/backfill 触发，可以多跑几次。"""
-    if not _VECTOR_READY:
-        return {'ok': False, 'reason': 'RAG 未就绪（检查 USE_RAG 和 EMBED_API_KEY）'}
+    if not is_vector_ready():
+        return {'ok': False, 'reason': 'RAG 未就绪（检查设置里的 USE_RAG 和 EMBED_API_KEY / 中转 Key）'}
     done, failed = 0, 0
     for table in ['long_memory', 'bond_memory']:
         conn = get_conn()
@@ -401,17 +456,17 @@ def _count_missing():
 def rag_status():
     """给 /rag/status 用：看清楚现在到底是什么状态。"""
     return {
-        'use_rag_env': USE_RAG,
-        'has_api_key': bool(EMBED_API_KEY),
-        'vector_ready': _VECTOR_READY,
+        'use_rag_env': _use_rag(),
+        'has_api_key': bool(_embed_key()),
+        'vector_ready': is_vector_ready(),
         'engine': 'numpy' if _HAS_NUMPY else 'pure-python',
-        'model': EMBED_MODEL,
-        'dim': EMBED_DIM,
-        'base_url': EMBED_BASE_URL,
+        'model': _embed_model(),
+        'dim': _embed_dim(),
+        'base_url': _embed_base(),
         'cached': {t: len(_CACHE[t]) for t in _CACHE},
         'cache_mb': round(
-            sum(len(_CACHE[t]) for t in _CACHE) * EMBED_DIM * 4 / 1024 / 1024, 1),
-        'missing_embeddings': _count_missing() if _VECTOR_READY else None,
+            sum(len(_CACHE[t]) for t in _CACHE) * _embed_dim() * 4 / 1024 / 1024, 1),
+        'missing_embeddings': _count_missing() if is_vector_ready() else None,
         'auto_backfill_running': _AUTO_BACKFILL_RUNNING,
     }
 
@@ -441,7 +496,7 @@ def _auto_backfill_loop():
     idle_rounds = 0
     while True:
         try:
-            if not _VECTOR_READY:
+            if not is_vector_ready():
                 time.sleep(300)
                 continue
             missing = _count_missing()

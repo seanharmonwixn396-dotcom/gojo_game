@@ -98,6 +98,20 @@ function formatToday(): string {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
+const OFFLINE_STATE_RE = /<<<\s*OFFLINE_CHARACTER_STATES\s*>>>[\s\S]*$/i;
+function sanitizeUserReply(text?: string | null): string {
+  if (!text) return '';
+  return text.replace(OFFLINE_STATE_RE, '').trim();
+}
+function sanitizeStoredMessage(msg: Message): Message {
+  if (msg.role === 'user') return msg;
+  return {
+    ...msg,
+    text: sanitizeUserReply(msg.text),
+    subtitle: msg.subtitle ? sanitizeUserReply(msg.subtitle) : msg.subtitle,
+  };
+}
+
 export default function ChatRoom() {
   const { id: rawId } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -238,7 +252,14 @@ export default function ChatRoom() {
             setAccounts(accRes.data?.accounts || []);
           } catch (e) { console.warn('load accounts error', e); }
           const saved = await AsyncStorage.getItem(STORAGE_KEY);
-          if (saved) setMessages(JSON.parse(saved));
+          if (saved) {
+            try {
+              const parsed = JSON.parse(saved);
+              setMessages(Array.isArray(parsed) ? parsed.map(sanitizeStoredMessage) : []);
+            } catch {
+              setMessages([]);
+            }
+          }
         }
 
         await loadAudioIndex();
@@ -1330,10 +1351,14 @@ export default function ChatRoom() {
                     )}
                     {msg.text && msg.text !== '📷 [图片]' && (
                       <Text style={[s.bubbleText, msg.role === 'user' && s.bubbleTextUser]}>
-                        {msg.text}
+                        {msg.role === 'user' ? msg.text : sanitizeUserReply(msg.text)}
                       </Text>
                     )}
-                    {msg.subtitle && <Text style={s.subtitle}>{msg.subtitle}</Text>}
+                    {msg.subtitle && (
+                      <Text style={s.subtitle}>
+                        {msg.role === 'user' ? msg.subtitle : sanitizeUserReply(msg.subtitle)}
+                      </Text>
+                    )}
                     {msg.role === 'gojo' && hasAudio && (
                       <Text style={s.replayHint}>
                         {resynthing === msg.id

@@ -81,6 +81,11 @@ _STATIC = {
     'DEEPSEEK_BASE_URL': DEEPSEEK_BASE_URL,
     'FISH_KEY':          FISH_KEY,
     'FISH_VOICE_ID':     FISH_VOICE_ID,
+    'USE_RAG':           os.environ.get('USE_RAG', '0'),
+    'EMBED_API_KEY':     os.environ.get('EMBED_API_KEY', ''),
+    'EMBED_BASE_URL':    os.environ.get('EMBED_BASE_URL', ''),
+    'EMBED_MODEL':       os.environ.get('EMBED_MODEL', 'embedding-3'),
+    'EMBED_DIM':         os.environ.get('EMBED_DIM', '1024'),
 }
 
 _cache = None

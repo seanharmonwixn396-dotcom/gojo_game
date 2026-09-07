@@ -27,10 +27,15 @@ ALLOWED = {
     'DEEPSEEK_BASE_URL',
     'FISH_KEY',
     'FISH_VOICE_ID',
+    'USE_RAG',
+    'EMBED_API_KEY',
+    'EMBED_BASE_URL',
+    'EMBED_MODEL',
+    'EMBED_DIM',
 }
 
 # 这些是密钥，GET 时打码
-SECRETS = {'ANTHROPIC_KEY', 'DEEPSEEK_KEY', 'FISH_KEY'}
+SECRETS = {'ANTHROPIC_KEY', 'DEEPSEEK_KEY', 'FISH_KEY', 'EMBED_API_KEY'}
 
 
 def _mask(v: str) -> str:
@@ -76,6 +81,14 @@ async def update_settings(data: dict):
     conn.close()
 
     config.clear_settings_cache()
+    rag_keys = {'USE_RAG', 'EMBED_API_KEY', 'EMBED_BASE_URL', 'EMBED_MODEL', 'EMBED_DIM',
+                'DEEPSEEK_KEY', 'DEEPSEEK_BASE_URL'}
+    if rag_keys & set(updated):
+        try:
+            import memory_search
+            memory_search.init_vector_support()
+        except Exception as e:
+            print(f'[settings] RAG 重新初始化跳过：{e}')
     print(f'[settings] 已更新 {updated}')
     return JSONResponse({
         'ok': True,

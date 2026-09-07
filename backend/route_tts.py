@@ -58,10 +58,10 @@ async def resynth(data: dict):
 @router.get('/rag/status')
 async def rag_status():
     return JSONResponse({
-        'use_rag': memory_search.USE_RAG,
+        'use_rag': memory_search._use_rag(),
         'vector_ready': memory_search.is_vector_ready(),
-        'model': memory_search.EMBED_MODEL,
-        'dim': memory_search.EMBED_DIM,
+        'model': memory_search._embed_model(),
+        'dim': memory_search._embed_dim(),
         'hint': ('向量检索已启用' if memory_search.is_vector_ready()
                  else '当前用全量注入 + prompt 缓存（记忆量不大时这样更省、也不会漏记）'),
     })

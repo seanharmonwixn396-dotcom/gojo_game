@@ -26,6 +26,11 @@ const FIELDS = [
   { key: 'MODEL_CN_AUX',      label: '后台任务模型',            hint: '记忆提取/日记生成用，推荐 claude-haiku-4-5-20251001' },
   { key: 'FISH_KEY',          label: 'Fish Audio Key',        secret: true, hint: '语音 TTS 用，不用就不填' },
   { key: 'FISH_VOICE_ID',     label: '默认 Voice ID',          hint: '角色没单独配音色时用这个' },
+  { key: 'USE_RAG',           label: '开启 RAG',               hint: '填 1 开启记忆向量检索。中转用户开这个即可，会复用上面的中转 Key 和地址' },
+  { key: 'EMBED_API_KEY',     label: 'Embedding Key',         secret: true, hint: '可不填：默认用中转 Key。单独走智谱就填智谱 key' },
+  { key: 'EMBED_BASE_URL',    label: 'Embedding Base URL',    hint: '可不填：默认用中转地址。智谱用 https://open.bigmodel.cn/api/paas/v4' },
+  { key: 'EMBED_MODEL',       label: 'Embedding 模型',         hint: '中转上的 embedding 模型名；智谱默认 embedding-3' },
+  { key: 'EMBED_DIM',         label: '向量维度',               hint: '默认 1024。中转模型不支持降维就改成模型原维度，或留空' },
 ] as const;
 
 export default function SettingsScreen() {
